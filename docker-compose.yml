@@ -1,0 +1,90 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL with pgvector ──────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: jobsniper_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobsniper
+      POSTGRES_PASSWORD: jobsniper
+      POSTGRES_DB: jobsniper
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobsniper -d jobsniper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (BullMQ) ────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: jobsniper_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Next.js Web Application ───────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: jobsniper_web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://jobsniper:jobsniper@postgres:5432/jobsniper?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+
+  # ── Worker Service ────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: jobsniper_worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://jobsniper:jobsniper@postgres:5432/jobsniper?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PLAYWRIGHT_HEADLESS: "true"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+      # Mount for Playwright browser cache
+      - playwright_cache:/root/.cache/ms-playwright
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
+  playwright_cache:

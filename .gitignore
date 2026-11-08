@@ -1,0 +1,53 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Testing
+/coverage
+
+# Next.js build output
+/.next/
+/out/
+
+# Production build outputs
+/build
+/dist/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+*.pem
+
+# Debug and Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
+
+# Sensitive Environment Variables (Never commit secrets!)
+.env
+.env.*
+!.env.example
+
+# User Uploads (Contains personal resumes and application screenshots)
+/uploads/resumes/*
+!/uploads/resumes/.gitkeep
+/uploads/screenshots/*
+!/uploads/screenshots/.gitkeep
+
+# Local Scratch / Test Scripts
+/scratch/
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts

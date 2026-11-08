@@ -1,0 +1,265 @@
+// This is the Prisma schema for JobSniper
+// Database: PostgreSQL with pgvector extension
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/client"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector, pg_trgm]
+}
+
+// ─── Enumerations ──────────────────────────────────────────────────────────────
+
+enum AtsType {
+  GREENHOUSE
+  LEVER
+  ASHBY
+  WORKABLE
+  SMARTRECRUITERS
+  CUSTOM
+}
+
+enum JobStatus {
+  NEW
+  FILTERING
+  FILTERED
+  MATCHING
+  MATCHED
+  AWAITING_REVIEW
+  APPLYING
+  APPLIED
+  SKIPPED_LOW_MATCH
+  FAILED
+  NEEDS_MANUAL_ACTION
+}
+
+enum ApplicationStatus {
+  READY_FOR_REVIEW
+  SUBMITTING
+  SUBMITTED
+  FAILED
+  NEEDS_MANUAL_ACTION
+}
+
+enum ApplyMode {
+  REVIEW
+  FULL_AUTO
+  MANUAL
+}
+
+enum NotificationType {
+  INFO
+  ACTION_REQUIRED
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+// ─── Company ───────────────────────────────────────────────────────────────────
+
+model Company {
+  id                     String     @id @default(cuid())
+  name                   String
+  slug                   String     @unique
+  careersUrl             String
+  atsType                AtsType
+  pollingIntervalMinutes Int        @default(2)
+  applyMode              ApplyMode  @default(REVIEW)
+  isActive               Boolean    @default(true)
+  isPaused               Boolean    @default(false)
+  lastPolledAt           DateTime?
+  jobsCount              Int        @default(0)
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+
+  jobs Job[]
+
+  @@index([slug])
+  @@index([isActive])
+  @@index([lastPolledAt])
+}
+
+// ─── Job ───────────────────────────────────────────────────────────────────────
+
+model Job {
+  id           String    @id @default(cuid())
+  externalId   String
+  companyId    String
+  title        String
+  location     String    @default("")
+  isRemote     Boolean   @default(false)
+  department   String?
+  description  String    @db.Text
+  url          String
+  postedAt     DateTime?
+  firstSeenAt  DateTime  @default(now())
+  atsType      AtsType
+  status       JobStatus @default(NEW)
+  filterReason String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@unique([companyId, externalId])
+  @@index([status])
+  @@index([firstSeenAt])
+  @@index([companyId])
+}
+
+// ─── Resume ────────────────────────────────────────────────────────────────────
+
+model Resume {
+  id                String                      @id @default(cuid())
+  name              String
+  label             String // "Backend", "Frontend", "GenAI/ML", "SDE/DSA"
+  targetRoles       String[] // ["backend engineer", "distributed systems"]
+  filePath          String // Relative to STORAGE_PATH
+  fileText          String                      @db.Text
+  structuredSummary Json // { skills: string[], projects: { name, description }[], strengths: string[], experience: string[] }
+  embedding         Unsupported("vector(768)")? // 768-dim Gemini text-embedding-004
+  isDefault         Boolean                     @default(false)
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  applications Application[]
+}
+
+// ─── Application ───────────────────────────────────────────────────────────────
+
+model Application {
+  id               String            @id @default(cuid())
+  jobId            String
+  resumeId         String?
+  status           ApplicationStatus @default(READY_FOR_REVIEW)
+  mode             ApplyMode         @default(REVIEW)
+  matchScore       Float? // 0-100 composite (weighted)
+  embeddingScore   Float? // 0-100 cosine similarity
+  llmScore         Float? // 0-100 Gemini judge
+  matchReason      String? // 1-line verdict from LLM judge
+  allScores        Json? // [{ resumeId, label, embeddingScore, llmScore, finalScore }]
+  formAnswers      Json? // [{ question, answer, source: "PROFILE"|"QA_BANK"|"LLM_GENERATED" }]
+  screenshotPath   String?
+  confirmationText String?           @db.Text
+  errorMessage     String?           @db.Text
+  retryCount       Int               @default(0)
+  submittedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resume Resume? @relation(fields: [resumeId], references: [id])
+
+  @@unique([jobId]) // One application per job
+  @@index([status])
+  @@index([jobId])
+  @@index([createdAt])
+}
+
+// ─── Profile ───────────────────────────────────────────────────────────────────
+
+model Profile {
+  id                String   @id @default(cuid())
+  fullName          String
+  email             String
+  phone             String
+  location          String
+  linkedinUrl       String?
+  githubUrl         String?
+  portfolioUrl      String?
+  education         Json // [{ institution, degree, major, gpa, startDate, endDate, current }]
+  graduationBatch   String? // "2025"
+  workAuthorization String // "US Citizen" | "H1B" | "OPT" | etc.
+  requireSponsorship Boolean @default(false)
+  yearsOfExperience Float    @default(0)
+  bio               String?  @db.Text
+  skills            String[]
+  preferredLocations String[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// ─── Q&A Bank ─────────────────────────────────────────────────────────────────
+
+model QuestionAnswerBank {
+  id              String   @id @default(cuid())
+  questionPattern String // Normalized/lowercased version for fuzzy matching
+  originalQuestion String
+  answer          String   @db.Text
+  category        String   @default("general") // "work_auth" | "experience" | "cultural" | "technical" | "general"
+  source          String   @default("MANUAL") // "MANUAL" | "LLM_GENERATED"
+  usageCount      Int      @default(0)
+  lastUsedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([questionPattern])
+  @@index([category])
+}
+
+// ─── App Settings ─────────────────────────────────────────────────────────────
+
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id          String           @id @default(cuid())
+  title       String
+  message     String           @db.Text
+  type        NotificationType @default(INFO)
+  link        String?
+  metadata    Json?
+  isRead      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// ─── Activity Log ─────────────────────────────────────────────────────────────
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  level     String   @default("INFO") // "DEBUG" | "INFO" | "WARN" | "ERROR"
+  component String // "POLLER" | "FILTER" | "MATCHER" | "APPLY_ENGINE" | "NOTIFIER" | "WEB"
+  jobId     String?
+  companyId String?
+  message   String   @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([component])
+  @@index([level])
+  @@index([jobId])
+}
+
+// ─── Job Filter Config ────────────────────────────────────────────────────────
+
+model JobFilter {
+  id                 String   @id @default(cuid())
+  name               String   @default("Default Filter")
+  isActive           Boolean  @default(true)
+  includeTitleKeywords String[] // e.g. ["software engineer", "SWE", "backend"]
+  excludeTitleKeywords String[] // e.g. ["senior", "staff", "principal", "manager"]
+  allowedLocations   String[] // Empty = any location
+  allowRemote        Boolean  @default(true)
+  allowOnsite        Boolean  @default(true)
+  allowHybrid        Boolean  @default(true)
+  experienceLevels   String[] // "intern" | "new_grad" | "junior" | "mid" | "senior"
+  graduationBatch    String? // Filter by graduation year mentioned in job
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
